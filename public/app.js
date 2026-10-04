@@ -24,7 +24,22 @@ addEventListener("resize", resize); resize();
 /* ============================== 3d math ============================== */
 // Rotation: yaw around Y, then pitch around X. Camera looks down -Z... we use
 // a lookAt-style basis instead: camPos, camFwd, camRight, camUp.
+// dual cameras for the 50/50 split: clock above, board below.
+// `cam` is the active camera (set per render pass).
+const camClockDef = { pos: [0, 5.2, 7.0], look: [0, 5.2, -7.8], f: 560, sway: 0 };
+const camBoardDef = { pos: [0, 9.5, 11.0], look: [0, 0, 0.4], f: 640, sway: 0 };
 const cam = { pos: [0, 8, 12.5], look: [0, 0.2, 0], f: 700, sway: 0 };
+function setCam(def) {
+  cam.pos = def.pos.slice(); cam.look = def.look.slice(); cam.f = def.f; cam.sway = def.sway;
+}
+// layout: top half = clock, bottom half = board (50/50). Returns rects.
+function layout() {
+  const split = H * 0.5;
+  return {
+    clock: { x: 0, y: 0, w: W, h: split },
+    board: { x: 0, y: split, w: W, h: H - split },
+  };
+}
 function camBasis() {
   const fwd = norm3(sub3(cam.look, cam.pos));
   const right = norm3(cross3(fwd, [0, 1, 0]));
@@ -38,13 +53,15 @@ function cross3(a, b) {
 function norm3(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
-// project world -> screen. Returns null behind camera.
+// viewport (set per render pass for the 50/50 split)
+let VX = 0, VY = 0, VW = 0, VH = 0;
+// project world -> screen within the current viewport. Returns null behind camera.
 function project(p, B) {
   const d = sub3(p, cam.pos);
   const z = dot3(d, B.fwd), x = dot3(d, B.right), y = dot3(d, B.up);
   if (z < 0.5) return null;
-  let sx = W / 2 + (x / z) * cam.f;
-  let sy = H / 2 - (y / z) * cam.f;
+  let sx = VX + VW / 2 + (x / z) * cam.f;
+  let sy = VY + VH / 2 - (y / z) * cam.f;
   if (!REDUCED) { sx = Math.round(sx) + 0.0; sy = Math.round(sy); } // PS1 snap
   return [sx, sy, z];
 }
@@ -166,9 +183,8 @@ const LIGHT = norm3([-0.45, 0.8, 0.55]);
 const RIM = norm3([0.5, 0.2, -0.7]);
 let eclipseDim = 0; // 0..1 darkens the scene during eclipses
 
-// instances: { mesh, pos:[x,y,z], ry, rx, tint:[r,g,b]|null }
-function renderScene(instances, B) {
-  // background gradient + stars (2D)
+// instances: { mesh, pos:[x,y,z], ry, rx, rz, tint:[r,g,b]|null, view }
+function drawBackground() {
   const g = ctx.createLinearGradient(0, 0, 0, H);
   const dim = 1 - eclipseDim * 0.75;
   g.addColorStop(0, `rgb(${11 * dim | 0},${14 * dim | 0},${26 * dim | 0})`);
@@ -176,9 +192,13 @@ function renderScene(instances, B) {
   g.addColorStop(1, `rgb(${5 * dim | 0},${6 * dim | 0},${13 * dim | 0})`);
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   drawStars(dim);
-
+}
+// 3D pass only (no background); view filters 'clock' | 'board'
+function renderScene(instances, B, view) {
+  const dim = 1 - eclipseDim * 0.75;
   const tris = [];
   for (const inst of instances) {
+    if (inst.view !== view && inst.view !== "both") continue;
     const { mesh, pos } = inst;
     const wv = new Array(mesh.v.length);
     for (let i = 0; i < mesh.v.length; i++) {
@@ -329,7 +349,7 @@ const G = {
   omens: ["eclipse", "bloom", "harvest", "oracle"],
   omenIdx: 0,
   // gear angles
-  gearMain: 0, gearMainTarget: 0,
+  gearMain: 0, gearMainTarget: 0, gearVel: 0, clockKick: 0,
   saros: 0,              // 0..1, full turn per 3 moons
   paused: false,
 };
@@ -382,8 +402,9 @@ function pitPos(idx) {
 }
 
 const instances = [];
+let buildView = "both"; // set while building board vs clock
 function addInst(mesh, pos, opts = {}) {
-  const inst = { mesh, pos, ry: opts.ry || 0, rx: opts.rx || 0, rz: opts.rz || 0, tint: opts.tint || null };
+  const inst = { mesh, pos, ry: opts.ry || 0, rx: opts.rx || 0, rz: opts.rz || 0, tint: opts.tint || null, view: opts.view || buildView };
   instances.push(inst); return inst;
 }
 // hand: thin box pivoting at its base (extends +Y), for clock hands
@@ -394,6 +415,7 @@ function handMesh(len, wid, color) {
 }
 
 function buildBoard() {
+  buildView = "board";
   // basalt slab + bronze base trim
   addInst(boxMesh(14.6, 0.7, 5.6, STONE), [0, -0.36, 0]);
   addInst(boxMesh(15.2, 0.22, 6.2, BRONZE_DK), [0, -0.78, 0]);
@@ -414,6 +436,7 @@ function buildBoard() {
   // corner studs
   const stud = cylMesh(0.16, 0.3, 10, BRONZE);
   for (const [x, z] of [[-7, -2.6], [7, -2.6], [-7, 2.6], [7, 2.6]]) addInst(stud, [x, 0.1, z]);
+  buildView = "both";
 }
 
 // --- the mechanism: an astronomical clock ---
@@ -426,7 +449,13 @@ const WHEEL = { x: 0, y: 5.2, z: -7.8, pitch: 3.24 };
 function sunAngle() {
   return ((G.moons + G.grains / G.MOON_LEN) / 12) * TAU;
 }
+// lunar angle: one revolution per moon — the true moon hand (independent of
+// the main wheel, which spins faster for drama)
+function lunarAngle() {
+  return (G.moons + G.grains / G.MOON_LEN) * TAU;
+}
 function buildMechanism() {
+  buildView = "clock";
   // FIXED zodiac ring — the clock face (does not rotate)
   const ring = annulusMesh(3.65, 4.08, 64, BRONZE_DK);
   addInst(ring, [WHEEL.x, WHEEL.y, WHEEL.z], { rx: Math.PI / 2 });
@@ -478,13 +507,15 @@ function buildMechanism() {
   const eye = cylMesh(0.32, 0.16, 16, [20, 22, 34]);
   const eyeI = addInst(eye, [0, 0, 0], { rx: Math.PI / 2 });
   gears.push({ inst: eyeI, kind: "sarosEye" });
+  buildView = "both";
   // (the clock floats; no pedestal — it is a dream of bronze)
 }
 
-// clock face: fixed calendar rings — Greek zodiac, Taoist bagua, Kongolese
-// dikenga — plus the sun/moon discs and saros eye. The rings never turn;
-// the hands do.
-const ZODIAC = ["Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ"];
+// clock face: fixed calendar rings — astrological symbols + Greek alphabet,
+// Taoist bagua, Kongolese dikenga — plus the sun/moon discs and saros eye.
+// The rings never turn; the hands do.
+const ASTRO = ["♈︎","♉︎","♊︎","♋︎","♌︎","♍︎","♎︎","♏︎","♐︎","♑︎","♒︎","♓︎"];
+const GREEK = ["Α","Β","Γ","Δ","Ε","Ζ","Η","Θ","Ι","Κ","Λ","Μ","Ν","Ξ","Ο","Π","Ρ","Σ","Τ","Υ","Φ","Χ","Ψ","Ω"];
 const BAGUA = ["☰", "☱", "☲", "☳", "☴", "☵", "☶", "☷"];
 // dikenga: four moments of the sun (Kongo cosmogram). Angles in the wheel
 // plane: 90°=top. Colors: kala=black/dawn, tukula=red/noon,
@@ -521,14 +552,24 @@ function drawZodiac(B) {
     ctx.lineWidth = major ? 2.5 : 1;
     ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke();
   }
-  // prominent Greek letters on the ring (fixed)
-  ctx.font = "700 18px Georgia, serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  // astrological symbols on the zodiac ring (fixed) — force text presentation
+  ctx.font = "20px 'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * TAU + TAU / 24;
     const p = project([WHEEL.x + Math.cos(a) * 3.87, WHEEL.y + Math.sin(a) * 3.87, WHEEL.z + 0.08], B);
     if (!p) continue;
     ctx.fillStyle = `rgba(242,224,165,${0.98 * dim})`;
-    ctx.fillText(ZODIAC[i], p[0], p[1]);
+    ctx.fillText(ASTRO[i], p[0], p[1]);
+  }
+  // the Greek alphabet — 24 letters on the bezel (fixed)
+  ctx.font = "600 10px Georgia, serif";
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * TAU + TAU / 48;
+    const p = project([WHEEL.x + Math.cos(a) * 3.56, WHEEL.y + Math.sin(a) * 3.56, WHEEL.z + 0.32], B);
+    if (!p) continue;
+    ctx.fillStyle = `rgba(216,196,140,${0.85 * dim})`;
+    ctx.fillText(GREEK[i], p[0], p[1]);
   }
   // Taoist bagua: eight trigrams on the outer ring (fixed)
   ctx.font = "20px Georgia, serif";
@@ -579,7 +620,7 @@ function drawZodiac(B) {
     ctx.beginPath(); ctx.arc(sp[0], sp[1], 7, 0, TAU); ctx.fill();
   }
   // moon disc at the moon hand's tip, shaded by the true phase
-  const ma = G.gearMain;
+  const ma = lunarAngle();
   const mp = project([WHEEL.x + Math.cos(ma) * 3.1, WHEEL.y + Math.sin(ma) * 3.1, WHEEL.z + 0.4], B);
   if (mp) {
     const phase = (G.grains / G.MOON_LEN) % 1; // 0 = new, 0.5 = full
@@ -676,7 +717,10 @@ const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2)
 function addGrains(n) {
   G.grains += n;
   // every grain clicks the main wheel forward two teeth (48 teeth, 24/moon)
-  G.gearMainTarget += n * (TAU / 48) * 2;
+  // the wheel TURNS: 3 teeth per grain — the moon advances one full
+  // revolution every 16 grains (a dramatic, visible step each sowing)
+  G.gearMainTarget += n * (TAU / 48) * 3;
+  G.clockKick = Math.min(1, G.clockKick + n * 0.35); // jolt the machine
   Audio2.gear();
   while (G.grains >= G.MOON_LEN) {
     G.grains -= G.MOON_LEN;
@@ -846,7 +890,7 @@ function resetMatch() {
   G.state = newMancala();
   G.grains = 0; G.moon = 1; G.moons = 0; G.omenIdx = 0;
   G.eclipseArmed = false; G.eclipseRounds = 0; G.oracleTurn = -1;
-  G.gearMain = 0; G.gearMainTarget = 0; G.saros = 0;
+  G.gearMain = 0; G.gearMainTarget = 0; G.gearVel = 0; G.clockKick = 0; G.saros = 0;
   G.animating = false;
   document.getElementById("end-screen").classList.add("hidden");
   setBanner("Sow a house to begin.");
@@ -855,9 +899,13 @@ function resetMatch() {
 
 /* ============================== input (3D picking) ============================== */
 function screenToPit(cx, cy) {
+  // picking happens in the board viewport (bottom half)
+  const L = layout();
+  setCam(camBoardDef);
+  VX = L.board.x; VY = L.board.y; VW = L.board.w; VH = L.board.h;
   const B = camBasis();
-  // ray: origin cam.pos, dir through pixel
-  const nx = (cx - W / 2) / cam.f, ny = -(cy - H / 2) / cam.f;
+  // ray: origin cam.pos, dir through pixel (viewport-relative)
+  const nx = (cx - (VX + VW / 2)) / cam.f, ny = -((cy - (VY + VH / 2))) / cam.f;
   const dir = norm3([
     B.right[0] * nx + B.up[0] * ny + B.fwd[0],
     B.right[1] * nx + B.up[1] * ny + B.fwd[1],
@@ -895,24 +943,21 @@ function frame(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
   lastT = t;
   stepTweens(dt);
-  // camera sway
-  if (!REDUCED) {
-    cam.sway += dt;
-    cam.pos[0] = Math.sin(cam.sway * 0.11) * 0.5;
-    cam.pos[1] = 8 + Math.sin(cam.sway * 0.07) * 0.25;
-  }
-  const B = camBasis();
-  // gears: spring toward target
+  // gears: underdamped spring toward target — a mechanical CLUNK with overshoot
   const prev = G.gearMain;
-  G.gearMain += (G.gearMainTarget - G.gearMain) * Math.min(1, dt * 7);
+  const stiff = 140, damp = 9;
+  G.gearVel += ((G.gearMainTarget - G.gearMain) * stiff - G.gearVel * damp) * dt;
+  G.gearMain += G.gearVel * dt;
   const dMain = G.gearMain - prev;
+  // clock kick decays; jolts the clock camera for drama
+  G.clockKick = Math.max(0, G.clockKick - dt * 2.2);
   // the clockwork: every wheel spins in its own plane (rz), meshed by ratio.
-  // One input — the sowing — drives the moon wheel; the train follows.
+  // One input — the sowing — drives the main wheel; the train follows.
   for (const g of gears) {
     if (g.kind === "main") g.inst.rz = G.gearMain;
     else if (g.kind === "spoke") g.inst.rz = G.gearMain + g.off - Math.PI / 2;
     else if (g.kind === "sat") g.inst.rz = G.gearMain * g.ratio + g.phase;
-    else if (g.kind === "moonHand") g.inst.rz = G.gearMain - Math.PI / 2;
+    else if (g.kind === "moonHand") g.inst.rz = lunarAngle() - Math.PI / 2;
     else if (g.kind === "sunHand") g.inst.rz = sunAngle() - Math.PI / 2;
     else if (g.kind === "saros") g.inst.rz = G.saros * TAU - Math.PI / 2;
     else if (g.kind === "sarosEye") {
@@ -924,17 +969,50 @@ function frame(t) {
   if (!G.started || (!G.animating && G.grains === 0)) {
     G.gearMainTarget += dt * 0.05;
   }
-  renderScene(instances, B);
-  drawZodiac(B);
-  drawSeeds(B, flying);
-  // hover ring highlight
-  if (hoverPit >= 0 && legalMoves(G.state).includes(hoverPit)) {
-    const [x, , z] = pitPos(hoverPit);
-    const p = project([x, 0.05, z], B);
-    if (p) {
-      ctx.strokeStyle = "rgba(67,179,162,0.9)"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(p[0], p[1], 30, 0, TAU); ctx.stroke();
+  const L = layout();
+  drawBackground();
+  // --- top half: the clock, large and dramatic ---
+  {
+    const kick = G.clockKick * G.clockKick;
+    setCam(camClockDef);
+    if (!REDUCED && kick > 0.001) {
+      cam.pos[0] += (Math.random() - 0.5) * 0.35 * kick;
+      cam.pos[1] += (Math.random() - 0.5) * 0.35 * kick;
     }
+    VX = L.clock.x; VY = L.clock.y; VW = L.clock.w; VH = L.clock.h;
+    const B = camBasis();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(VX, VY, VW, VH); ctx.clip();
+    renderScene(instances, B, "clock");
+    drawZodiac(B);
+    ctx.restore();
+    // divider
+    ctx.strokeStyle = "rgba(216,164,116,0.35)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, L.clock.h); ctx.lineTo(W, L.clock.h); ctx.stroke();
+  }
+  // --- bottom half: the board ---
+  {
+    setCam(camBoardDef);
+    if (!REDUCED) {
+      cam.sway += dt;
+      cam.pos[0] = Math.sin(cam.sway * 0.11) * 0.4;
+    }
+    VX = L.board.x; VY = L.board.y; VW = L.board.w; VH = L.board.h;
+    const B = camBasis();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(VX, VY, VW, VH); ctx.clip();
+    renderScene(instances, B, "board");
+    drawSeeds(B, flying);
+    // hover ring highlight
+    if (hoverPit >= 0 && legalMoves(G.state).includes(hoverPit)) {
+      const [x, , z] = pitPos(hoverPit);
+      const p = project([x, 0.05, z], B);
+      if (p) {
+        ctx.strokeStyle = "rgba(67,179,162,0.9)"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(p[0], p[1], 30, 0, TAU); ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
   void dMain;
 }
