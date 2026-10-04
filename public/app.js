@@ -350,6 +350,7 @@ const G = {
   omenIdx: 0,
   // gear angles
   gearMain: 0, gearMainTarget: 0, gearVel: 0, clockKick: 0,
+  celestial: false, // exploration mode: clock reads the real sky
   saros: 0,              // 0..1, full turn per 3 moons
   paused: false,
 };
@@ -385,6 +386,99 @@ function updateHud() {
   const phases = ["☽", "☾", "◍", "☀"];
   document.getElementById("moon-phase").textContent = phases[Math.floor(G.grains / G.MOON_LEN * 4) % 4];
 }
+/* ============================== celestial mode ============================== */
+// Real-sky astronomy for the exploration mode: sun/moon longitudes, local
+// sidereal time, and a bright-star catalog for the planisphere.
+const OBS_LAT = 40 * Math.PI / 180;   // 40°N
+const OBS_LON = -75;                   // 75°W (US East)
+const OBLIQ = 23.439 * Math.PI / 180;  // obliquity of the ecliptic
+// [name, RA hours, Dec degrees, magnitude]
+const STARS = [
+  ["Sirius", 6.752, -16.716, -1.5], ["Canopus", 6.399, -52.696, -0.7],
+  ["Arcturus", 14.261, 19.182, -0.1], ["Vega", 18.616, 38.784, 0.0],
+  ["Capella", 5.278, 45.998, 0.1], ["Rigel", 5.242, -8.202, 0.1],
+  ["Procyon", 7.655, 5.225, 0.3], ["Betelgeuse", 5.919, 7.407, 0.4],
+  ["Altair", 19.846, 8.868, 0.8], ["Aldebaran", 4.599, 16.509, 0.9],
+  ["Antares", 16.490, -26.432, 1.0], ["Spica", 13.420, -11.161, 1.0],
+  ["Pollux", 7.755, 28.027, 1.1], ["Fomalhaut", 22.960, -29.622, 1.2],
+  ["Deneb", 20.690, 45.280, 1.3], ["Regulus", 10.140, 11.967, 1.4],
+  ["Castor", 7.577, 31.888, 1.6], ["Bellatrix", 5.418, 6.350, 1.6],
+  ["Elnath", 5.438, 28.608, 1.7], ["Alnilam", 5.606, -1.202, 1.7],
+  ["Alnitak", 5.679, -1.943, 1.7], ["Saiph", 5.796, -9.670, 2.1],
+  ["Mintaka", 5.534, -0.299, 2.2], ["Polaris", 2.530, 89.264, 2.0],
+  ["Dubhe", 11.062, 61.751, 1.8], ["Merak", 11.031, 56.382, 2.4],
+  ["Phecda", 11.897, 53.695, 2.4], ["Megrez", 12.257, 57.033, 3.3],
+  ["Alioth", 12.911, 55.960, 1.8], ["Mizar", 13.399, 54.925, 2.3],
+  ["Alkaid", 13.792, 49.313, 1.9], ["Caph", 0.153, 59.150, 2.3],
+  ["Schedar", 0.675, 56.537, 2.2], ["Gamma Cas", 0.945, 60.717, 2.5],
+  ["Ruchbah", 1.430, 60.235, 2.7], ["Segin", 1.907, 63.670, 3.4],
+  ["Sadr", 20.370, 40.257, 2.2], ["Albireo", 19.512, 27.959, 3.2],
+  ["Tarazed", 19.771, 10.613, 2.7], ["Alshain", 19.811, 6.407, 3.7],
+  ["Enif", 21.736, 9.875, 2.4], ["Markab", 23.079, 15.205, 2.5],
+  ["Scheat", 23.063, 28.083, 2.4], ["Alpheratz", 0.140, 29.091, 2.1],
+  ["Mirach", 1.162, 35.620, 2.1], ["Algol", 3.136, 40.957, 2.1],
+  ["Mirfak", 3.405, 49.861, 1.8], ["Hamal", 2.120, 23.463, 2.0],
+  ["Diphda", 0.731, -17.989, 2.0], ["Menkar", 3.037, 4.090, 2.5],
+  ["Alcyone", 3.790, 24.117, 2.9], ["Algenib", 0.220, 15.183, 2.8],
+  ["Denebola", 11.818, 14.572, 2.1], ["Zosma", 11.235, 20.524, 2.6],
+  ["Ras Alhague", 17.582, 12.560, 2.1], ["Sabik", 17.165, -15.725, 2.4],
+  ["Graffias", 16.091, -19.805, 2.6], ["Dschubba", 16.005, -22.622, 2.3],
+];
+// constellation line segments (by star name)
+const CONSTELLATIONS = [
+  { name: "ORION", lines: [["Betelgeuse", "Alnitak"], ["Bellatrix", "Mintaka"], ["Alnitak", "Alnilam"], ["Alnilam", "Mintaka"], ["Alnitak", "Saiph"], ["Mintaka", "Rigel"], ["Alnitak", "Rigel"]] },
+  { name: "URSA MAJOR", lines: [["Dubhe", "Merak"], ["Merak", "Phecda"], ["Phecda", "Megrez"], ["Megrez", "Dubhe"], ["Megrez", "Alioth"], ["Alioth", "Mizar"], ["Mizar", "Alkaid"]] },
+  { name: "CASSIOPEIA", lines: [["Caph", "Schedar"], ["Schedar", "Gamma Cas"], ["Gamma Cas", "Ruchbah"], ["Ruchbah", "Segin"]] },
+  { name: "CYGNUS", lines: [["Deneb", "Sadr"], ["Sadr", "Albireo"]] },
+  { name: "AQUILA", lines: [["Altair", "Tarazed"], ["Altair", "Alshain"]] },
+  { name: "SCORPIUS", lines: [["Antares", "Graffias"], ["Graffias", "Dschubba"], ["Antares", "Sabik"]] },
+  { name: "LEO", lines: [["Regulus", "Denebola"], ["Regulus", "Algieba"]] },
+  { name: "GEMINI", lines: [["Castor", "Pollux"]] },
+  { name: "CANIS MAJOR", lines: [["Sirius", "Mirzam"]] },
+  { name: "PEGASUS", lines: [["Markab", "Scheat"], ["Scheat", "Algenib"], ["Markab", "Alpheratz"]] },
+  { name: "TAURUS", lines: [["Aldebaran", "Elnath"], ["Aldebaran", "Alcyone"]] },
+];
+const STAR_BY_NAME = {};
+for (const s of STARS) STAR_BY_NAME[s[0]] = s;
+STAR_BY_NAME["Sheliak"] = ["Sheliak", 18.834, 33.363, 3.5];
+STAR_BY_NAME["Mirzam"] = ["Mirzam", 6.378, -17.955, 2.0];
+STAR_BY_NAME["Algieba"] = ["Algieba", 10.333, 19.842, 2.1];
+
+function nowInfo() {
+  const now = new Date();
+  const d = (now.getTime() - Date.UTC(2000, 0, 1, 12)) / 86400000; // days since J2000
+  const L = (280.460 + 0.9856474 * d) % 360;                      // sun mean longitude
+  const g = (357.528 + 0.9856003 * d) % 360 * Math.PI / 180;      // sun mean anomaly
+  const sunLon = (L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g) + 360) % 360;
+  const synodic = 29.530588853;
+  const newMoon2000 = Date.UTC(2000, 0, 6, 18, 14);
+  const phase = (((now.getTime() - newMoon2000) / 86400000 / synodic) % 1 + 1) % 1;
+  const moonLon = (218.316 + 13.176396 * d) % 360;
+  const gmst = (280.46061837 + 360.98564736629 * d) % 360;
+  const lst = (((gmst + OBS_LON) % 360 + 360) % 360) / 15;
+  const signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"];
+  return { now, sunLon, moonLon, phase, lst, sign: signs[Math.floor(sunLon / 30) % 12] };
+}
+// ecliptic longitude (deg) -> [RA hours, Dec deg]
+function eclToRaDec(lonDeg) {
+  const lon = lonDeg * Math.PI / 180;
+  const ra = Math.atan2(Math.sin(lon) * Math.cos(OBLIQ), Math.cos(lon));
+  const dec = Math.asin(Math.sin(lon) * Math.sin(OBLIQ));
+  return [((ra * 180 / Math.PI / 15) % 24 + 24) % 24, dec * 180 / Math.PI];
+}
+// RA hours, Dec deg -> [altitude, azimuth] radians (az from north, eastward)
+function raDecToAltAz(raH, decD, lstH) {
+  const ra = raH * 15 * Math.PI / 180, dec = decD * Math.PI / 180;
+  let ha = (lstH * 15 * Math.PI / 180 - ra) % (2 * Math.PI);
+  if (ha > Math.PI) ha -= 2 * Math.PI; if (ha < -Math.PI) ha += 2 * Math.PI;
+  const sinAlt = Math.sin(dec) * Math.sin(OBS_LAT) + Math.cos(dec) * Math.cos(OBS_LAT) * Math.cos(ha);
+  const alt = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+  const cosAz = (Math.sin(dec) - Math.sin(alt) * Math.sin(OBS_LAT)) / (Math.cos(alt) * Math.cos(OBS_LAT));
+  let az = Math.acos(Math.max(-1, Math.min(1, cosAz)));
+  if (Math.sin(ha) > 0) az = 2 * Math.PI - az;
+  return [alt, az];
+}
+
 /* ============================== scene ============================== */
 const BRONZE = [176, 141, 87], BRONZE_DK = [122, 96, 58], VERDI = [67, 179, 162];
 const STONE = [52, 56, 72], STONE_DK = [30, 33, 44], BOWL = [20, 23, 34];
@@ -620,10 +714,13 @@ function drawZodiac(B) {
     ctx.beginPath(); ctx.arc(sp[0], sp[1], 7, 0, TAU); ctx.fill();
   }
   // moon disc at the moon hand's tip, shaded by the true phase
-  const ma = lunarAngle();
+  // (in celestial mode: the real moon's longitude and phase)
+  const celInfo = G.celestial ? nowInfo() : null;
+  const ma = celInfo ? celInfo.moonLon * Math.PI / 180 : lunarAngle();
+  const mphase = celInfo ? celInfo.phase : (G.grains / G.MOON_LEN) % 1;
   const mp = project([WHEEL.x + Math.cos(ma) * 3.1, WHEEL.y + Math.sin(ma) * 3.1, WHEEL.z + 0.4], B);
   if (mp) {
-    const phase = (G.grains / G.MOON_LEN) % 1; // 0 = new, 0.5 = full
+    const phase = mphase; // 0 = new, 0.5 = full
     const bright = Math.sin(phase * Math.PI);
     ctx.fillStyle = "rgba(28,30,42,0.95)";
     ctx.beginPath(); ctx.arc(mp[0], mp[1], 9, 0, TAU); ctx.fill();
@@ -644,6 +741,138 @@ function drawZodiac(B) {
     ctx.strokeStyle = `rgba(255,179,71,${0.35 * dim})`; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(ep[0], ep[1], 18, 0, TAU); ctx.stroke();
   }
+}
+
+// planisphere star chart (2D, drawn in the board viewport)
+function drawStarChart(info) {
+  const cx = VX + VW / 2, cy = VY + VH / 2;
+  const R = Math.min(VW, VH) * 0.44;
+  const dim = 1 - eclipseDim * 0.6;
+  // chart disc
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+  g.addColorStop(0, `rgba(16,22,44,${0.96 * dim})`);
+  g.addColorStop(1, `rgba(8,10,24,${0.96 * dim})`);
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+  ctx.strokeStyle = `rgba(216,164,116,${0.5 * dim})`; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.stroke();
+  // project alt/az to chart (zenith center, horizon rim, north up)
+  const toXY = (alt, az) => {
+    const r = (1 - alt / (Math.PI / 2)) * R;
+    return [cx + r * Math.sin(az), cy - r * Math.cos(az)];
+  };
+  // cardinal labels
+  ctx.font = "600 11px Georgia, serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = `rgba(216,196,140,${0.8 * dim})`;
+  const cards = [["N", 0], ["E", Math.PI / 2], ["S", Math.PI], ["W", 3 * Math.PI / 2]];
+  for (const [t, az] of cards) {
+    ctx.fillText(t, cx + (R + 14) * Math.sin(az), cy - (R + 14) * Math.cos(az));
+  }
+  // ecliptic (dashed)
+  ctx.strokeStyle = `rgba(242,224,165,${0.35 * dim})`; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  let started = false;
+  for (let lon = 0; lon <= 360; lon += 4) {
+    const [ra, dec] = eclToRaDec(lon);
+    const [alt, az] = raDecToAltAz(ra, dec, info.lst);
+    if (alt <= 0) { started = false; continue; }
+    const [x, y] = toXY(alt, az);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+  // constellation lines
+  ctx.strokeStyle = `rgba(120,150,190,${0.4 * dim})`; ctx.lineWidth = 1;
+  for (const c of CONSTELLATIONS) {
+    for (const [a, b] of c.lines) {
+      const sa = STAR_BY_NAME[a], sb = STAR_BY_NAME[b];
+      if (!sa || !sb) continue;
+      const [alt1, az1] = raDecToAltAz(sa[1], sa[2], info.lst);
+      const [alt2, az2] = raDecToAltAz(sb[1], sb[2], info.lst);
+      if (alt1 <= 0 || alt2 <= 0) continue;
+      const [x1, y1] = toXY(alt1, az1), [x2, y2] = toXY(alt2, az2);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+  }
+  // stars
+  for (const [name, ra, dec, mag] of STARS) {
+    const [alt, az] = raDecToAltAz(ra, dec, info.lst);
+    if (alt <= 0) continue;
+    const [x, y] = toXY(alt, az);
+    const r = Math.max(0.8, 3.2 - mag * 0.75);
+    ctx.fillStyle = `rgba(235,240,255,${Math.min(1, 0.55 + (2.5 - mag) * 0.25) * dim})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    if (mag < 1.2) {
+      ctx.font = "9px Georgia, serif";
+      ctx.fillStyle = `rgba(200,210,230,${0.75 * dim})`;
+      ctx.fillText(name, x + r + 5, y - r - 3);
+    }
+  }
+  // sun on the ecliptic
+  {
+    const [ra, dec] = eclToRaDec(info.sunLon);
+    const [alt, az] = raDecToAltAz(ra, dec, info.lst);
+    if (alt > 0) {
+      const [x, y] = toXY(alt, az);
+      ctx.fillStyle = `rgba(242,200,90,${0.95 * dim})`;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.fill();
+      ctx.font = "11px Georgia, serif"; ctx.fillStyle = `rgba(242,200,90,${0.9 * dim})`;
+      ctx.fillText("☉", x, y - 13);
+    }
+  }
+  // moon on the ecliptic, true phase
+  {
+    const [ra, dec] = eclToRaDec(info.moonLon);
+    const [alt, az] = raDecToAltAz(ra, dec, info.lst);
+    if (alt > 0) {
+      const [x, y] = toXY(alt, az);
+      const bright = Math.sin(info.phase * Math.PI);
+      ctx.fillStyle = `rgba(30,32,46,${0.95 * dim})`;
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, TAU); ctx.fill();
+      ctx.fillStyle = `rgba(220,225,235,${(0.25 + 0.7 * bright) * dim})`;
+      ctx.beginPath(); ctx.arc(x, y, 2 + 4 * bright, 0, TAU); ctx.fill();
+      ctx.font = "11px Georgia, serif";
+      ctx.fillText("☽", x, y - 13);
+    }
+  }
+  // caption
+  ctx.font = "600 12px Georgia, serif";
+  ctx.fillStyle = `rgba(216,196,140,${0.9 * dim})`;
+  const lstH = Math.floor(info.lst), lstM = Math.floor((info.lst - lstH) * 60);
+  ctx.fillText(`PLANISPHERE · 40°N 75°W · LST ${lstH}h${String(lstM).padStart(2, "0")}m`, cx, cy + R + 18);
+}
+// celestial overlay on the clock: 24h hand, true sun/moon, readout
+function drawCelestialClock(B, info) {
+  const dim = 1 - eclipseDim * 0.6;
+  // 24 hour ticks (fixed)
+  ctx.strokeStyle = `rgba(168,205,190,${0.5 * dim})`; ctx.lineWidth = 1;
+  for (let h = 0; h < 24; h++) {
+    const a = Math.PI / 2 - (h / 24) * TAU;
+    const p1 = project([WHEEL.x + Math.cos(a) * 3.28, WHEEL.y + Math.sin(a) * 3.28, WHEEL.z + 0.15], B);
+    const p2 = project([WHEEL.x + Math.cos(a) * 3.44, WHEEL.y + Math.sin(a) * 3.44, WHEEL.z + 0.15], B);
+    if (p1 && p2) { ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke(); }
+  }
+  // 24h hand (local time)
+  const hrs = info.now.getHours() + info.now.getMinutes() / 60 + info.now.getSeconds() / 3600;
+  const ha = Math.PI / 2 - (hrs / 24) * TAU;
+  const hp1 = project([WHEEL.x, WHEEL.y, WHEEL.z + 0.5], B);
+  const hp2 = project([WHEEL.x + Math.cos(ha) * 3.0, WHEEL.y + Math.sin(ha) * 3.0, WHEEL.z + 0.5], B);
+  if (hp1 && hp2) {
+    ctx.strokeStyle = `rgba(235,240,255,${0.9 * dim})`; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(hp1[0], hp1[1]); ctx.lineTo(hp2[0], hp2[1]); ctx.stroke();
+  }
+  // readout
+  const tstr = info.now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const dstr = info.now.toLocaleDateString([], { month: "short", day: "numeric" });
+  const pct = Math.round(Math.sin(info.phase * Math.PI) * 100);
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.font = "600 13px Georgia, serif";
+  ctx.fillStyle = `rgba(242,224,165,${0.95 * dim})`;
+  const rx = VX + 14, ry = VY + 12;
+  ctx.fillText(`✦ ${tstr} · ${dstr}`, rx, ry);
+  ctx.font = "11px Georgia, serif";
+  ctx.fillStyle = `rgba(200,210,225,${0.85 * dim})`;
+  ctx.fillText(`Sun in ${info.sign} · Moon ${pct}% lit`, rx, ry + 20);
 }
 
 /* ============================== seeds (2D sprites) ============================== */
@@ -925,6 +1154,7 @@ function screenToPit(cx, cy) {
 }
 canvas.addEventListener("pointerdown", (e) => {
   Audio2.init();
+  if (G.celestial) return; // exploration mode: no moves
   if (!G.started || G.animating || G.state.turn !== 0) return;
   const pit = screenToPit(e.clientX, e.clientY);
   if (pit >= 0) playerMove(pit);
@@ -953,12 +1183,14 @@ function frame(t) {
   G.clockKick = Math.max(0, G.clockKick - dt * 2.2);
   // the clockwork: every wheel spins in its own plane (rz), meshed by ratio.
   // One input — the sowing — drives the main wheel; the train follows.
+  // In celestial mode the sun/moon hands read the real sky.
+  const cel = G.celestial ? nowInfo() : null;
   for (const g of gears) {
     if (g.kind === "main") g.inst.rz = G.gearMain;
     else if (g.kind === "spoke") g.inst.rz = G.gearMain + g.off - Math.PI / 2;
     else if (g.kind === "sat") g.inst.rz = G.gearMain * g.ratio + g.phase;
-    else if (g.kind === "moonHand") g.inst.rz = lunarAngle() - Math.PI / 2;
-    else if (g.kind === "sunHand") g.inst.rz = sunAngle() - Math.PI / 2;
+    else if (g.kind === "moonHand") g.inst.rz = (cel ? cel.moonLon * Math.PI / 180 : lunarAngle()) - Math.PI / 2;
+    else if (g.kind === "sunHand") g.inst.rz = (cel ? cel.sunLon * Math.PI / 180 : sunAngle()) - Math.PI / 2;
     else if (g.kind === "saros") g.inst.rz = G.saros * TAU - Math.PI / 2;
     else if (g.kind === "sarosEye") {
       const sa = G.saros * TAU;
@@ -985,6 +1217,7 @@ function frame(t) {
     ctx.beginPath(); ctx.rect(VX, VY, VW, VH); ctx.clip();
     renderScene(instances, B, "clock");
     drawZodiac(B);
+    if (cel) drawCelestialClock(B, cel);
     ctx.restore();
     // divider
     ctx.strokeStyle = "rgba(216,164,116,0.35)"; ctx.lineWidth = 1;
@@ -1001,10 +1234,14 @@ function frame(t) {
     const B = camBasis();
     ctx.save();
     ctx.beginPath(); ctx.rect(VX, VY, VW, VH); ctx.clip();
-    renderScene(instances, B, "board");
-    drawSeeds(B, flying);
+    if (G.celestial && cel) {
+      drawStarChart(cel);
+    } else {
+      renderScene(instances, B, "board");
+      drawSeeds(B, flying);
+    }
     // hover ring highlight
-    if (hoverPit >= 0 && legalMoves(G.state).includes(hoverPit)) {
+    if (!G.celestial && hoverPit >= 0 && legalMoves(G.state).includes(hoverPit)) {
       const [x, , z] = pitPos(hoverPit);
       const p = project([x, 0.05, z], B);
       if (p) {
@@ -1032,6 +1269,13 @@ document.getElementById("btn-sound").addEventListener("click", (e) => {
   const off = Audio2.toggle();
   e.currentTarget.classList.toggle("off", off);
   e.currentTarget.textContent = off ? "✕" : "♪";
+});
+document.getElementById("btn-celestial").addEventListener("click", (e) => {
+  Audio2.init();
+  G.celestial = !G.celestial;
+  e.currentTarget.style.color = G.celestial ? "#f2e0a5" : "";
+  setBanner(G.celestial ? "Celestial exploration — the clock reads the real sky." : "Back to the game.");
+  if (G.celestial) Audio2.gong(); else Audio2.tick();
 });
 
 /* ============================== boot ============================== */
