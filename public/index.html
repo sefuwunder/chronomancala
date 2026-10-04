@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0e1a">
+<title>CHRONOMANCALA — Seeds of the Antikythera</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="hud-top">
+  <div id="title-small">CHRONOMANCALA</div>
+  <div id="time-readout" aria-live="polite">
+    <span id="moon-phase">☽</span>
+    <span id="month-label">Moon 1</span>
+    <span id="grain-bar"><span id="grain-fill"></span></span>
+    <span id="grain-count">0/24</span>
+  </div>
+  <div id="hud-buttons">
+    <button id="btn-sound" class="icon-btn" aria-label="toggle sound">♪</button>
+    <button id="btn-new" class="icon-btn" aria-label="new game">↻</button>
+  </div>
+</div>
+
+<div id="score-strip">
+  <div class="score you"><span class="score-name">You</span><span id="score-you">0</span></div>
+  <div id="turn-banner" aria-live="polite">Sow a house to begin</div>
+  <div class="score foe"><span id="score-foe">0</span><span class="score-name">Automaton</span></div>
+</div>
+
+<div id="omen-banner" class="hidden">
+  <div id="omen-glyph">☉</div>
+  <div id="omen-title">SYZYGY</div>
+  <div id="omen-text"></div>
+</div>
+
+<div id="title-screen">
+  <div class="title-frame">
+    <div class="greek-key"></div>
+    <h1>CHRONOMANCALA</h1>
+    <p class="subtitle">seeds of the antikythera</p>
+    <p class="lore">Two players sow grains around the wheel.<br>
+    Every grain turns the bronze gears.<br>
+    Every moon, the mechanism grants an omen.</p>
+    <div class="rules">
+      <div><b>Sow</b> — lift every grain from one of your houses; they fall one by one around the ring.</div>
+      <div><b>Granary</b> — land your last grain here and sow again.</div>
+      <div><b>Capture</b> — land in an empty house of yours and seize the opposite house.</div>
+      <div><b>Omens</b> — each moon (24 grains) the gears bestow a blessing. Beware the eclipse.</div>
+    </div>
+    <button id="btn-begin">Begin the Cycle</button>
+    <div class="greek-key"></div>
+  </div>
+</div>
+
+<div id="end-screen" class="hidden">
+  <div class="title-frame">
+    <div class="greek-key"></div>
+    <h1 id="end-title">THE WHEEL RESTS</h1>
+    <p class="subtitle" id="end-detail"></p>
+    <button id="btn-again">Turn the Wheel Again</button>
+    <div class="greek-key"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
