@@ -432,6 +432,9 @@ function buildMechanism() {
   addInst(ring, [WHEEL.x, WHEEL.y, WHEEL.z], { rx: Math.PI / 2 });
   const bezel = annulusMesh(3.5, 3.62, 64, BRONZE);
   addInst(bezel, [WHEEL.x, WHEEL.y, WHEEL.z + 0.3], { rx: Math.PI / 2 });
+  // FIXED Taoist bagua ring — eight trigrams, outermost (does not rotate)
+  const baguaRing = annulusMesh(4.16, 4.52, 72, shade(BRONZE_DK, 0.72));
+  addInst(baguaRing, [WHEEL.x, WHEEL.y, WHEEL.z - 0.06], { rx: Math.PI / 2 });
 
   // main moon wheel (48T) — one revolution per moon
   const main = gearMesh(48, 3.5, 2.98, 0.5, BRONZE, 0.7);
@@ -478,9 +481,32 @@ function buildMechanism() {
   // (the clock floats; no pedestal — it is a dream of bronze)
 }
 
-// clock face: fixed zodiac ring with ticks + letters, sun/moon discs on the
-// hands, and the saros eclipse eye. The ring never turns; the hands do.
+// clock face: fixed calendar rings — Greek zodiac, Taoist bagua, Kongolese
+// dikenga — plus the sun/moon discs and saros eye. The rings never turn;
+// the hands do.
 const ZODIAC = ["Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ"];
+const BAGUA = ["☰", "☱", "☲", "☳", "☴", "☵", "☶", "☷"];
+// dikenga: four moments of the sun (Kongo cosmogram). Angles in the wheel
+// plane: 90°=top. Colors: kala=black/dawn, tukula=red/noon,
+// luvemba=white/sunset, musoni=yellow/midnight.
+const DIKENGA = [
+  { name: "KALA", a0: 45 * Math.PI / 180, a1: 135 * Math.PI / 180, c: "#4a4a4a", lc: "#9a9a9a" },
+  { name: "TUKULA", a0: -45 * Math.PI / 180, a1: 45 * Math.PI / 180, c: "#b03a2a", lc: "#d06a5a" },
+  { name: "LUVEMBA", a0: 225 * Math.PI / 180, a1: 315 * Math.PI / 180, c: "#d8d8d8", lc: "#e8e8e8" },
+  { name: "MUSONI", a0: 135 * Math.PI / 180, a1: 225 * Math.PI / 180, c: "#c9971f", lc: "#d9ab3a" },
+];
+function strokeArc3D(B, cx, cy, cz, r, a0, a1, color, width) {
+  ctx.strokeStyle = color; ctx.lineWidth = width;
+  ctx.beginPath();
+  let started = false;
+  for (let a = a0; a <= a1 + 0.001; a += 0.06) {
+    const p = project([cx + Math.cos(a) * r, cy + Math.sin(a) * r, cz], B);
+    if (!p) continue;
+    if (!started) { ctx.moveTo(p[0], p[1]); started = true; }
+    else ctx.lineTo(p[0], p[1]);
+  }
+  ctx.stroke();
+}
 function drawZodiac(B) {
   const dim = 1 - eclipseDim * 0.6;
   // 48 tick marks around the fixed ring
@@ -503,6 +529,34 @@ function drawZodiac(B) {
     if (!p) continue;
     ctx.fillStyle = `rgba(242,224,165,${0.98 * dim})`;
     ctx.fillText(ZODIAC[i], p[0], p[1]);
+  }
+  // Taoist bagua: eight trigrams on the outer ring (fixed)
+  ctx.font = "20px Georgia, serif";
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU + TAU / 16;
+    const p = project([WHEEL.x + Math.cos(a) * 4.34, WHEEL.y + Math.sin(a) * 4.34, WHEEL.z], B);
+    if (!p) continue;
+    ctx.fillStyle = `rgba(168,205,190,${0.92 * dim})`;
+    ctx.fillText(BAGUA[i], p[0], p[1]);
+  }
+  // Kongolese dikenga: the cross of the four sun-moments (fixed overlay)
+  const dz = WHEEL.z + 0.14;
+  ctx.strokeStyle = `rgba(200,190,170,${0.35 * dim})`; ctx.lineWidth = 1;
+  {
+    const t = project([WHEEL.x, WHEEL.y + 2.95, dz], B), b = project([WHEEL.x, WHEEL.y - 2.95, dz], B);
+    const l = project([WHEEL.x - 2.95, WHEEL.y, dz], B), r = project([WHEEL.x + 2.95, WHEEL.y, dz], B);
+    if (t && b) { ctx.beginPath(); ctx.moveTo(t[0], t[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+    if (l && r) { ctx.beginPath(); ctx.moveTo(l[0], l[1]); ctx.lineTo(r[0], r[1]); ctx.stroke(); }
+  }
+  for (const m of DIKENGA) {
+    strokeArc3D(B, WHEEL.x, WHEEL.y, dz, 2.82, m.a0, m.a1, m.c, 5);
+    const la = (m.a0 + m.a1) / 2;
+    const lp = project([WHEEL.x + Math.cos(la) * 2.38, WHEEL.y + Math.sin(la) * 2.38, dz], B);
+    if (lp) {
+      ctx.font = "600 9px Georgia, serif";
+      ctx.fillStyle = m.lc;
+      ctx.fillText(m.name, lp[0], lp[1]);
+    }
   }
   // sun disc at the sun hand's tip (golden, rayed)
   const sa = sunAngle();
