@@ -49,9 +49,10 @@ function project(p, B) {
   return [sx, sy, z];
 }
 
-// rotate point around Y then X (object space)
-function rotYX(p, ry, rx) {
+// rotate point: rz (in-plane spin) first, then yaw around Y, then pitch around X
+function rotYX(p, ry, rx, rz) {
   let [x, y, z] = p;
+  if (rz) { const c = Math.cos(rz), s = Math.sin(rz); const nx = x * c - y * s, ny = x * s + y * c; x = nx; y = ny; }
   if (ry) { const c = Math.cos(ry), s = Math.sin(ry); const nx = x * c + z * s, nz = -x * s + z * c; x = nx; z = nz; }
   if (rx) { const c = Math.cos(rx), s = Math.sin(rx); const ny = y * c - z * s, nz2 = y * s + z * c; y = ny; z = nz2; }
   return [x, y, z];
@@ -181,7 +182,7 @@ function renderScene(instances, B) {
     const { mesh, pos } = inst;
     const wv = new Array(mesh.v.length);
     for (let i = 0; i < mesh.v.length; i++) {
-      const r = rotYX(mesh.v[i], inst.ry || 0, inst.rx || 0);
+      const r = rotYX(mesh.v[i], inst.ry || 0, inst.rx || 0, inst.rz || 0);
       wv[i] = [r[0] + pos[0], r[1] + pos[1], r[2] + pos[2]];
     }
     for (const fc of mesh.f) {
@@ -382,8 +383,14 @@ function pitPos(idx) {
 
 const instances = [];
 function addInst(mesh, pos, opts = {}) {
-  const inst = { mesh, pos, ry: opts.ry || 0, rx: opts.rx || 0, tint: opts.tint || null };
+  const inst = { mesh, pos, ry: opts.ry || 0, rx: opts.rx || 0, rz: opts.rz || 0, tint: opts.tint || null };
   instances.push(inst); return inst;
+}
+// hand: thin box pivoting at its base (extends +Y), for clock hands
+function handMesh(len, wid, color) {
+  const m = boxMesh(wid, len, 0.07, color);
+  m.v = m.v.map(p => [p[0], p[1] + len / 2, p[2]]);
+  return m;
 }
 
 function buildBoard() {
@@ -409,62 +416,138 @@ function buildBoard() {
   for (const [x, z] of [[-7, -2.6], [7, -2.6], [-7, 2.6], [7, 2.6]]) addInst(stud, [x, 0.1, z]);
 }
 
-// --- the mechanism: gear train behind the board ---
+// --- the mechanism: an astronomical clock ---
+// One input (the sowing) drives the whole train. The moon wheel turns once
+// per moon; the sun hand is geared 12:1 (once per year); the saros pointer
+// turns once per 3 moons. Satellites mesh with the main wheel at true ratios.
 const gears = [];
-const WHEEL = { x: 0, y: 5.1, z: -8.8, pitch: 2.78 };
+const WHEEL = { x: 0, y: 5.2, z: -7.8, pitch: 3.24 };
+// sun hand angle: one revolution per 12 moons
+function sunAngle() {
+  return ((G.moons + G.grains / G.MOON_LEN) / 12) * TAU;
+}
 function buildMechanism() {
-  // main lunar wheel: big, vertical, behind board
-  const main = gearMesh(48, 3.0, 2.55, 0.5, BRONZE, 0.6);
-  const g0 = addInst(main, [WHEEL.x, WHEEL.y, WHEEL.z], { rx: -0.1 });
+  // FIXED zodiac ring — the clock face (does not rotate)
+  const ring = annulusMesh(3.65, 4.08, 64, BRONZE_DK);
+  addInst(ring, [WHEEL.x, WHEEL.y, WHEEL.z], { rx: Math.PI / 2 });
+  const bezel = annulusMesh(3.5, 3.62, 64, BRONZE);
+  addInst(bezel, [WHEEL.x, WHEEL.y, WHEEL.z + 0.3], { rx: Math.PI / 2 });
+
+  // main moon wheel (48T) — one revolution per moon
+  const main = gearMesh(48, 3.5, 2.98, 0.5, BRONZE, 0.7);
+  const g0 = addInst(main, [WHEEL.x, WHEEL.y, WHEEL.z], {});
   gears.push({ inst: g0, ratio: 1, phase: 0, kind: "main" });
-  // satellite gears meshing around it (pitch radii sum = center distance)
+  // spokes so the wheel's turning reads clearly
+  for (let s = 0; s < 4; s++) {
+    const spoke = handMesh(2.85, 0.15, shade(BRONZE, 0.8));
+    const si = addInst(spoke, [WHEEL.x, WHEEL.y, WHEEL.z + 0.28], {});
+    gears.push({ inst: si, kind: "spoke", off: s * Math.PI / 2 });
+  }
+
+  // moon hand (silver) — rides the moon wheel, tip carries the phase disc
+  const mh = addInst(handMesh(3.1, 0.13, [205, 215, 230]), [WHEEL.x, WHEEL.y, WHEEL.z + 0.38], {});
+  gears.push({ inst: mh, kind: "moonHand" });
+  // sun hand (golden) — geared down 12:1, one revolution per year
+  const sh = addInst(handMesh(3.35, 0.17, [235, 185, 85]), [WHEEL.x, WHEEL.y, WHEEL.z + 0.48], {});
+  gears.push({ inst: sh, kind: "sunHand" });
+  // center cap
+  const cap = addInst(cylMesh(0.3, 0.2, 16, BRONZE), [WHEEL.x, WHEEL.y, WHEEL.z + 0.55], { rx: Math.PI / 2 });
+  void cap;
+
+  // satellite gears meshing with the main wheel (true ratios, counter-rotating)
   const sats = [
     { t: 16, ang: 200 * Math.PI / 180 },
     { t: 12, ang: -20 * Math.PI / 180 },
-    { t: 20, ang: 70 * Math.PI / 180 },
+    { t: 20, ang: 65 * Math.PI / 180 },
   ];
   for (const s of sats) {
     const r = WHEEL.pitch * (s.t / 48);
     const d = WHEEL.pitch + r;
     const g = gearMesh(s.t, r * 1.08, r * 0.92, 0.4, s.t === 12 ? VERDI : BRONZE_DK, r * 0.32);
-    const inst = addInst(g, [WHEEL.x + Math.cos(s.ang) * d, WHEEL.y + Math.sin(s.ang) * d, WHEEL.z], { rx: -0.1 });
+    const inst = addInst(g, [WHEEL.x + Math.cos(s.ang) * d, WHEEL.y + Math.sin(s.ang) * d, WHEEL.z], {});
     gears.push({ inst, ratio: -48 / s.t, phase: Math.PI / s.t, kind: "sat" });
   }
-  // saros pointer arm on the main wheel
-  const arm = boxMesh(0.1, 2.0, 0.08, VERDI);
-  const pointer = addInst(arm, [WHEEL.x, WHEEL.y, WHEEL.z + 0.35], {});
+
+  // saros eclipse pointer — one revolution per 3 moons
+  const arm = handMesh(2.2, 0.12, VERDI);
+  const pointer = addInst(arm, [WHEEL.x, WHEEL.y, WHEEL.z + 0.58], {});
   gears.push({ inst: pointer, kind: "saros" });
-  const eye = cylMesh(0.28, 0.16, 16, [20, 22, 34]);
+  const eye = cylMesh(0.32, 0.16, 16, [20, 22, 34]);
   const eyeI = addInst(eye, [0, 0, 0], { rx: Math.PI / 2 });
   gears.push({ inst: eyeI, kind: "sarosEye" });
-  // (the wheel floats; no pedestal — it is a dream of bronze)
+  // (the clock floats; no pedestal — it is a dream of bronze)
 }
 
-// zodiac glyphs projected onto the main wheel (2D overlay)
+// clock face: fixed zodiac ring with ticks + letters, sun/moon discs on the
+// hands, and the saros eclipse eye. The ring never turns; the hands do.
 const ZODIAC = ["Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ"];
 function drawZodiac(B) {
-  const g = gears[0]; if (!g) return;
-  ctx.font = "12px Georgia, serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   const dim = 1 - eclipseDim * 0.6;
+  // 48 tick marks around the fixed ring
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * TAU;
+    const major = i % 4 === 0;
+    const r1 = major ? 3.6 : 3.74, r2 = 4.1;
+    const p1 = project([WHEEL.x + Math.cos(a) * r1, WHEEL.y + Math.sin(a) * r1, WHEEL.z + 0.08], B);
+    const p2 = project([WHEEL.x + Math.cos(a) * r2, WHEEL.y + Math.sin(a) * r2, WHEEL.z + 0.08], B);
+    if (!p1 || !p2) continue;
+    ctx.strokeStyle = `rgba(215,175,95,${(major ? 0.95 : 0.45) * dim})`;
+    ctx.lineWidth = major ? 2.5 : 1;
+    ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke();
+  }
+  // prominent Greek letters on the ring (fixed)
+  ctx.font = "700 18px Georgia, serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (let i = 0; i < 12; i++) {
-    const a = G.gearMain + (i / 12) * TAU;
-    const x = Math.cos(a) * 2.62, y = Math.sin(a) * 2.62;
-    const wp = rotYX([x, y, 0.28], 0, -0.1);
-    const p = project([wp[0] + WHEEL.x, wp[1] + WHEEL.y, wp[2] + WHEEL.z], B);
+    const a = (i / 12) * TAU + TAU / 24;
+    const p = project([WHEEL.x + Math.cos(a) * 3.87, WHEEL.y + Math.sin(a) * 3.87, WHEEL.z + 0.08], B);
     if (!p) continue;
-    ctx.fillStyle = `rgba(232,220,192,${0.7 * dim})`;
+    ctx.fillStyle = `rgba(242,224,165,${0.98 * dim})`;
     ctx.fillText(ZODIAC[i], p[0], p[1]);
   }
-  // eclipse marker at saros angle
-  const sa = G.saros * TAU;
-  const ex = Math.cos(sa) * 1.7, ey = Math.sin(sa) * 1.7;
-  const ep = rotYX([ex, ey, 0.32], 0, -0.1);
-  const sp = project([ep[0] + WHEEL.x, ep[1] + WHEEL.y, ep[2] + WHEEL.z], B);
+  // sun disc at the sun hand's tip (golden, rayed)
+  const sa = sunAngle();
+  const sp = project([WHEEL.x + Math.cos(sa) * 3.35, WHEEL.y + Math.sin(sa) * 3.35, WHEEL.z + 0.5], B);
   if (sp) {
-    ctx.fillStyle = `rgba(20,20,30,${0.95})`;
+    ctx.strokeStyle = `rgba(255,200,90,${0.85 * dim})`; ctx.lineWidth = 2;
+    for (let r = 0; r < 8; r++) {
+      const ra = (r / 8) * TAU + sa;
+      ctx.beginPath();
+      ctx.moveTo(sp[0] + Math.cos(ra) * 11, sp[1] + Math.sin(ra) * 11);
+      ctx.lineTo(sp[0] + Math.cos(ra) * 17, sp[1] + Math.sin(ra) * 17);
+      ctx.stroke();
+    }
+    const grd = ctx.createRadialGradient(sp[0], sp[1], 0, sp[0], sp[1], 13);
+    grd.addColorStop(0, `rgba(255,232,155,${dim})`);
+    grd.addColorStop(1, "rgba(255,180,60,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(sp[0], sp[1], 13, 0, TAU); ctx.fill();
+    ctx.fillStyle = `rgba(255,214,115,${dim})`;
     ctx.beginPath(); ctx.arc(sp[0], sp[1], 7, 0, TAU); ctx.fill();
-    ctx.strokeStyle = `rgba(255,179,71,${0.9 * dim})`; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(sp[0], sp[1], 9, 0, TAU); ctx.stroke();
+  }
+  // moon disc at the moon hand's tip, shaded by the true phase
+  const ma = G.gearMain;
+  const mp = project([WHEEL.x + Math.cos(ma) * 3.1, WHEEL.y + Math.sin(ma) * 3.1, WHEEL.z + 0.4], B);
+  if (mp) {
+    const phase = (G.grains / G.MOON_LEN) % 1; // 0 = new, 0.5 = full
+    const bright = Math.sin(phase * Math.PI);
+    ctx.fillStyle = "rgba(28,30,42,0.95)";
+    ctx.beginPath(); ctx.arc(mp[0], mp[1], 9, 0, TAU); ctx.fill();
+    const mb = Math.round(60 + 170 * bright);
+    ctx.fillStyle = `rgba(${mb},${mb},${Math.min(255, mb + 12)},${0.95 * dim})`;
+    ctx.beginPath(); ctx.arc(mp[0], mp[1], 3 + 6 * bright, 0, TAU); ctx.fill();
+    ctx.strokeStyle = `rgba(205,215,230,${0.7 * dim})`; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(mp[0], mp[1], 9, 0, TAU); ctx.stroke();
+  }
+  // saros eclipse eye — larger, crowned with a corona
+  const ea = G.saros * TAU;
+  const ep = project([WHEEL.x + Math.cos(ea) * 2.2, WHEEL.y + Math.sin(ea) * 2.2, WHEEL.z + 0.6], B);
+  if (ep) {
+    ctx.fillStyle = "rgba(14,14,24,0.96)";
+    ctx.beginPath(); ctx.arc(ep[0], ep[1], 10, 0, TAU); ctx.fill();
+    ctx.strokeStyle = `rgba(255,179,71,${0.95 * dim})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(ep[0], ep[1], 13, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = `rgba(255,179,71,${0.35 * dim})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(ep[0], ep[1], 18, 0, TAU); ctx.stroke();
   }
 }
 
@@ -769,15 +852,18 @@ function frame(t) {
   const prev = G.gearMain;
   G.gearMain += (G.gearMainTarget - G.gearMain) * Math.min(1, dt * 7);
   const dMain = G.gearMain - prev;
+  // the clockwork: every wheel spins in its own plane (rz), meshed by ratio.
+  // One input — the sowing — drives the moon wheel; the train follows.
   for (const g of gears) {
-    if (g.kind === "main") g.inst.ry = -G.gearMain;
-    else if (g.kind === "sat") g.inst.ry = -G.gearMain * g.ratio + g.phase;
-    else if (g.kind === "saros") {
-      g.inst.ry = G.saros * TAU;
-      g.inst.pos = [WHEEL.x, WHEEL.y, WHEEL.z + 0.35];
-    } else if (g.kind === "sarosEye") {
+    if (g.kind === "main") g.inst.rz = G.gearMain;
+    else if (g.kind === "spoke") g.inst.rz = G.gearMain + g.off - Math.PI / 2;
+    else if (g.kind === "sat") g.inst.rz = G.gearMain * g.ratio + g.phase;
+    else if (g.kind === "moonHand") g.inst.rz = G.gearMain - Math.PI / 2;
+    else if (g.kind === "sunHand") g.inst.rz = sunAngle() - Math.PI / 2;
+    else if (g.kind === "saros") g.inst.rz = G.saros * TAU - Math.PI / 2;
+    else if (g.kind === "sarosEye") {
       const sa = G.saros * TAU;
-      g.inst.pos = [WHEEL.x + Math.cos(sa) * 1.7, WHEEL.y + Math.sin(sa) * 1.7, WHEEL.z + 0.4];
+      g.inst.pos = [WHEEL.x + Math.cos(sa) * 2.2, WHEEL.y + Math.sin(sa) * 2.2, WHEEL.z + 0.62];
     }
   }
   // idle drift so the machine feels alive
